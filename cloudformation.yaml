@@ -1,0 +1,162 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Master Cloud Apps - Modulo IV - Blue/Green Release
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+
+  SubnetID:
+    Type: AWS::EC2::Subnet::Id
+
+  DockerImage:
+    Type: String
+
+  ServiceName:
+    Type: String
+
+Resources:
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: mcapracticacd-cluster
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: mcapracticacd-log-group
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:  mcapracticacd--role
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName}-alb
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: "TCP"
+          FromPort: 8080
+          ToPort: 8080
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VpcId
+
+  ECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceRole
+  
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets: !Ref Subnets
+      SecurityGroups:
+        - !Ref SecurityGroup
+  
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 8080
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      Port: 8080
+      TargetType: ip
+      Protocol: HTTP
+      Matcher:
+        HttpCode: 200-299
+      HealthCheckIntervalSeconds: 90
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 60
+      HealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 30
+    DependsOn: 
+     - LoadBalancer
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: mcapracticacd-task
+      Cpu: 256
+      Memory: 2048
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !Ref ExecutionRole # Fargate requires task definition to have execution role ARN to support log driver awslogs
+      ContainerDefinitions:
+        - Name: mcapracticacdV1
+          Image: !Ref DockerImage
+          PortMappings:
+            - ContainerPort: 8080
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: ecs
+      RequiresCompatibilities:
+        - EC2
+        - FARGATE
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Ref ServiceName
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 2
+      LoadBalancers:
+        - ContainerName: mcapracticacdV1
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED # Private subnet with NAT gateway
+          SecurityGroups:
+             - !GetAtt SecurityGroup.GroupId
+          Subnets: !Ref Subnets
+    DependsOn: 
+      - TaskDefinition
+      - ECSServiceRole
+
+Outputs:
+  ClusterName:
+      Value: !Ref Cluster
+  ServiceUrl:
+    Description: URL of the load balancer for the application.
+    Value: !Sub http://${LoadBalancer.DNSName}
+  DNSName:
+    Value: !GetAtt LoadBalancer.DNSName

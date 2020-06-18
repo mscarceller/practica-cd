@@ -1,0 +1,32 @@
+<html>
+<body>
+
+	<h1>{{post.title}}</h1>
+	<span>{{post.content}}</span>
+	<hr>
+
+	<h2>Comentarios</h1>
+	<ul>
+		{{#post.comments}}
+		<li>{{.}}</li>
+		<form action="/post/{{post.id}}/comment/{{id}}/delete" method="post">
+			<input type="submit" value="Borrar" />
+		</form>
+		{{/post.comments}}
+	</ul>
+	<hr>
+
+	<h1>Nuevo comentario</h1>
+	<form action="/post/{{post.id}}/comment" method="post">
+		<p>Autor</p>
+		<input type="text" name="author"  value="{{userName}}"/>
+		<p>Mensaje</p>
+		<textarea name="message"></textarea>
+		<input type="submit" value="Enviar" />
+	</form>
+
+	<hr>
+	<a href="/"> Atrás </a>
+
+</body>
+</html>
