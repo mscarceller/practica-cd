@@ -1,25 +1,25 @@
 #### Máster Cloud Apps Módulo IV - DevOps, integración y despliegue continuo
 
-# Práctica: Depliegue Continuo - Blue/Green Deployment en AWS
+# Práctica: Despliegue Continuo - Blue/Green Deployment en AWS
 
 1. [Punto de partida](#puntodepartida)
 2. [Infraestructura](#infraestructura)
-    * [Creación inraestructura mediante Cloudformation](#cf)
-3. [Creación del Job para la el despliegue de la aplicación](#3)
+    * [Creación infraestructura mediante Cloudformation](#cf)
+3. [Creación del Job para el despliegue de la aplicación](#3)
 4. [Modificar Jenkinsfile para añadir despliegue en las ramas release](#4)
 5. [Ejemplo de funcionamiento completo](#funcionando)
-    * [Despliegue de release 1.1.0](#release1)
-    * [Despliegue de release 1.2.0](#release2)
+    * [Despliegue de release 1.3.0](#release1)
+    * [Despliegue de release 1.4.0](#release2)
 6. [Pruebas continuidad servicio con Jmeter](#jmeter)
-
+7. [Referencias documentación AWS](#docu)
 ---
 <a name="puntodepartida"></a>
 ## **1. Punto de partida** 
 
 Partimos de la aplicación de la práctica anterior (https://github.com/mscarceller/practica-ci), realizando algunos cambios:
 
-* La base de datos MySQL ahora esta desplegada mediante una RDS de AWS.
-* Con cada commit en ramas de release se ejecuta el pipeline, pero ahora, ademas, se desplegará la imagen en la infraestructura creada en AWS para ello.
+* La base de datos MySQL ahora está desplegada mediante una RDS de AWS.
+* Con cada commit en ramas de release se ejecuta el pipeline, pero ahora, además, se desplegará la imagen en la infraestructura creada en AWS para ello.
 
 
 <a name="infraestructura"></a>
@@ -32,14 +32,14 @@ El esquema final quedaría del siguiente modo:
 <a name="cf"></a>
 ### **2.1 Creación infraestructura mediante Cloudformation**
 
-Los eleemntos principales de la infraestructura que se ha añadido para publicar la web son:
+Los elementos principales de la infraestructura que se ha añadido para publicar la web son:
 
 * Un LoadBalancer que proporciona un endpoint público para acceder a la aplicación.
-* Un ECS (Elastic Container Service) en el que se despliegan dos nodos (Tasks) con la aplicación.
+* Un ECS (Elastic Container Service) en el que se despliegan dos nodos (Services) con la aplicación (Tasks).
 
-Toda la infraestructura se despliegua mediante un fichero coludformation.yaml, mediate el cual ademas, se desplegarán los nuevos servicios.A continuación se explican los elementos incluidos:
+Toda la infraestructura se despliega mediante un fichero coludformation.yaml, mediante el cual además, se desplegarán los nuevos servicios. A continuación, se explican los elementos incluidos:
 
-* Cluster ECS (Elastic Container Service): dentro se desplegaran nuestros servicios.
+* Cluster ECS (Elastic Container Service): dentro se desplegaran nuestros servicios. Mas adelante elegiremos ejecutar los clústeres de ECS con AWS Fargate. Fargate elimina la necesidad de aprovisionar y administrar servidores:
 
 ```yaml
     Cluster:
@@ -48,7 +48,7 @@ Toda la infraestructura se despliegua mediante un fichero coludformation.yaml, m
         ClusterName: mcapracticacd-cluster
 ```
 
-* LogGroup: para agrupar los logs de los servicios
+* LogGroup: para agrupar los logs de los servicios desplegados en ECS y poder monitorizar los eventos de las aplicaciones con CloudWatch agrupados:
 
 ```yaml
     LogGroup:
@@ -57,7 +57,7 @@ Toda la infraestructura se despliegua mediante un fichero coludformation.yaml, m
         LogGroupName: mcapracticacd-log-group
 ```
 
-* Rol para poder ejecutar Task dentro del cluster ECS
+* Rol para poder ejecutar Task dentro del cluster ECS:
 
 ```yaml
   ExecutionRole:
@@ -74,7 +74,7 @@ Toda la infraestructura se despliegua mediante un fichero coludformation.yaml, m
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 ```
 
-* Grupo de seguridad:
+* Grupo de seguridad, para para controlar el tráfico entrante y saliente:
 
 ```yaml
   SecurityGroup:
@@ -93,7 +93,7 @@ Toda la infraestructura se despliegua mediante un fichero coludformation.yaml, m
       VpcId: !Ref VpcId
 ```
 
-* Rol para los servicios dentro del ECS
+* Rol para los servicios dentro del ECS, este rol (AmazonEC2ContainerServiceRole) permitirá al load balancer registrar y desregistrar instancias de contenedores ECS: 
 
 ```yaml
   ECSServiceRole:
@@ -110,7 +110,7 @@ Toda la infraestructura se despliegua mediante un fichero coludformation.yaml, m
         - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceRole
 ```
 
-* El LoadBalancer que repartira el tráfico entre los servicios desplegados en el cluster ECS
+* El LoadBalancer que repartirá el tráfico entre los servicios desplegados en el cluster ECS, en el que se define, además, el puerto en el que estará escuchando el balanceador:
 
 ```yaml
   LoadBalancer:
@@ -131,7 +131,18 @@ Toda la infraestructura se despliegua mediante un fichero coludformation.yaml, m
           TargetGroupArn: !Ref TargetGroup
 ```
 
-* TargetGroup: se utiliza por el LoadBalncer para redireccionar solicitudes a uno o varios destinos registrados
+* TargetGroup: se utiliza por el LoadBalancer para redireccionar solicitudes a uno o varios destinos registrados. Los principales parámetros que se especifican son:
+
+  * Configuración de direccionamiento: se especifica el protocolo y el puerto que se debe redireccionar. En este caso seleccionamos HTTP y puerto 8080, y el tipo de destino IP (que realmente será un rango de IPs)
+  * **deregistration_delay.timeout_seconds**: tiempo que Elastic Load Balancing espera antes de anular el registro de un destino.
+  * Se indican los siguientes parámetros de HealthCheck para que se apliquen en e LoadBalancer:
+      * **IntervalSeconds**: el intervalo en segundos entre cada solicitud enviada desde el LoadBalancer para comprobar si el servicio está disponible.
+      * **HealthCheckPath**: el path al que se enviarán las solicitudes para verificar que el servicio esta disponible. En nuestro caso seleccionamos "/", ya que la web del blog responde en esa ruta con un código http 200 si todo está OK.
+      * **HealthCheckProtocol**: el protocolo que el LoadBalncer usará para realizar las comprobaciones sobre el servicio. En este caso HTTP.
+      * **HealthCheckTimeoutSeconds**: el número de segundos durante los cuales una respuesta negativa desde el servicio significa que no esta disponible.
+      * **HealthyThresholdCount**: el número consecutivo de respuestas válidas desde un servicio para que se considere que está disponible.
+
+  La definición quedaría:
 
 ```yaml
 TargetGroup:
@@ -155,7 +166,8 @@ TargetGroup:
      - LoadBalancer
 ```
 
-* TaskDefinition y Service, definen los contenedores que se depliegan dentro del cluster y el servicio que expone cada uno de ellos. 
+* TaskDefinition y Service, definen los contenedores que se despliegan dentro del cluster y el servicio que expone cada uno de ellos. Se especifica qué imágenes de Docker utilizar, en este caso se le pasa como parámetro, los recursos necesarios (CPU, memoria...) y otras configuraciones relacionadas con el lanzamiento de la definición de tarea a través de un servicio o tarea de Amazon ECS (grupo de logs...).
+Cabe destacar el tipo de lanzamiento: Fargate,permite ejecutar aplicaciones containerizadas sin necesidad de aprovisionar más infraestructura. 
 
 ```yaml
   TaskDefinition:
@@ -204,7 +216,7 @@ TargetGroup:
       - ECSServiceRole
 ```
 
-* La salidas que necesitamos para tener información de que todo ha ido bien. La mas importante es ServiceUrl, ya que será la url dónde este disponible nuestro servicio.
+* Las salidas que necesitamos para tener información de que todo ha ido bien. La más importante es ServiceUrl, ya que será la url dónde este disponible nuestro servicio.
 
 ```yaml
 Outputs:
@@ -217,10 +229,10 @@ Outputs:
     Value: !GetAtt LoadBalancer.DNSName
 ```
 
-**NOTA**: se podia haber añadido además una ElasticIp + Gateway, pero no era necesario para poder realizar las pruebas, al no tratarse de una aplicaicón real que neceiste mantener siempre la misma URL.
+**NOTA**: se podia haber añadido además una ElasticIp + Gateway, pero no era necesario para poder realizar las pruebas, al no tratarse de una aplicación real que necesite mantener siempre la misma URL.
 
 <a name="3"></a>
-## **3. Creación del Job para la el despliegue de la aplicación** 
+## **3. Creación del Job para el despliegue de la aplicación** 
 
 * Creamos un proyecto de tipo "estilo libre":
 
@@ -238,7 +250,7 @@ Outputs:
 
     ![Alt](images/proyectoaws3.png "proyectoaws3")
 
-* Fianlmente el comando a ejecutar:
+* Finalmente el comando a ejecutar:
 
     ![Alt](images/proyectoaws4.png "proyectoaws4")
 
@@ -250,7 +262,7 @@ Outputs:
 <a name="4"></a>
 ## **4. Modificar Jenkinsfile para añadir despliegue en las ramas release** 
 
-Modificamos el pipeline de jenkins, para incluir la llamada a este job si todo a hido correctamente y si se trata de una rama de release:
+Modificamos el pipeline de jenkins, para incluir la llamada a este job si todo ha ido correctamente y si se trata de una rama de release:
 
      ```shell
         def cloudformation_file = new File("${WORKSPACE}/cloudformation.yaml")
@@ -264,7 +276,7 @@ Modificamos el pipeline de jenkins, para incluir la llamada a este job si todo a
 <a name="funcionando"></a>
 ## **5. Ejemplo de funcionamiento completo** 
 
-Una vez desplegada la aplicación, inicialmente mediate el template cloudformation desde la consola de amazon web, vemos que tenemos lo siguiente:
+Una vez desplegada la aplicación, inicialmente mediante el template cloudformation desde la consola de amazon web, vemos que tenemos lo siguiente:
 
 * Cluster de ECS creado y con un servicio con dos tasks (containers):
 
@@ -339,7 +351,7 @@ Se disparará de forma automática el job de jenkins sobre la nueva rama, y se s
 
     ![Alt](images/release13_10.png "release13_10")
 
-* Y el job que se disparo al crear la release finaliza correctamente:
+* Y el job que se disparó al crear la release finaliza correctamente:
 
     ![Alt](images/release13_11.png "release13_11")
 
@@ -358,12 +370,12 @@ De igual forma que hemos hecho con la release 1.3.0 hacemos para publicar la 1.4
     ....
 ```
 
-Se podrian introducir más cambios, pero este es suficiente para comprobar que el proceso funciona.
+Se podrían introducir más cambios, pero este es suficiente para comprobar que el proceso funciona.
 
 <a name="jmeter"></a>
 ## **6. Pruebas continuidad servicio con Jmeter** 
 
-Durante el despliegue de la versión 1.4 he hecho una pequeña prueba para comprobar si hay perdida de servicio. Para ello he usado jemeter, para hacer peticiones get a la url del blog.
+Durante el despliegue de la versión 1.4 he hecho una pequeña prueba para comprobar si hay perdida de servicio. Para ello he usado jmeter, para hacer peticiones get a la url del blog.
 
 * Configuración de JMeter:
 
@@ -389,3 +401,41 @@ Durante el despliegue de la versión 1.4 he hecho una pequeña prueba para compr
 
 
 No vemos ninguna petición rechazada.
+
+---
+
+<a name="docu"></a>
+## **7. Referencias documentación AWS** 
+
+* Amazon ECS: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs_managed_policies.html#AmazonEC2ContainerServiceRole
+
+* EC2 security groups:
+https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-security-groups.html
+
+* ECS Task Execution IAM Role:
+https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_execution_IAM_role.html
+
+* Log Groups:
+https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Working-with-log-groups-and-streams.html
+
+* Target Groups:
+https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-target-groups.html
+
+* Routing Configuration:
+https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-target-groups.html#target-group-routing-configuration
+
+* Health Checks Target Groups:
+https://docs.aws.amazon.com/elasticloadbalancing/latest/application/target-group-health-checks.html
+
+* AWS::ECS::TaskDefinition:
+https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ecs-taskdefinition.html#cfn-ecs-taskdefinition-requirescompatibilities
+
+* AWS::ECS::Service:
+https://docs.aws.amazon.com/es_es/AWSCloudFormation/latest/UserGuide/aws-resource-ecs-service.html
+
+* Amazon ECS Launch Types
+https://docs.aws.amazon.com/AmazonECS/latest/developerguide/launch_types.html
+
+* Amazon ECS on AWS Fargate:
+https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html
+
