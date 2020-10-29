@@ -438,4 +438,3 @@ https://docs.aws.amazon.com/AmazonECS/latest/developerguide/launch_types.html
 
 * Amazon ECS on AWS Fargate:
 https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html
-
