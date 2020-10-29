@@ -1,5 +1,7 @@
 #### Máster Cloud Apps Módulo IV - DevOps, integración y despliegue continuo
 
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=mscarceller_practica-cd&metric=alert_status)](https://sonarcloud.io/dashboard?id=mscarceller_practica-cd)
+
 # Práctica: Despliegue Continuo - Blue/Green Deployment en AWS
 
 1. [Punto de partida](#puntodepartida)
